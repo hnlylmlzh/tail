@@ -7,18 +7,19 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"gopkg.in/tomb.v1"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hnlylmlzh/tail/ratelimiter"
 	"github.com/hnlylmlzh/tail/util"
 	"github.com/hnlylmlzh/tail/watch"
+	"gopkg.in/tomb.v1"
 )
 
 var (
@@ -27,14 +28,13 @@ var (
 
 type Line struct {
 	Text string
-	Num  int
 	Time time.Time
 	Err  error // Error from tail
 }
 
 // NewLine returns a Line with present time.
-func NewLine(text string, lineNum int) *Line {
-	return &Line{text, lineNum, time.Now(), nil}
+func NewLine(text string) *Line {
+	return &Line{text, time.Now(), nil}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -79,9 +79,8 @@ type Tail struct {
 	Lines    chan *Line
 	Config
 
-	file    *os.File
-	reader  *bufio.Reader
-	lineNum int
+	file   *os.File
+	reader *bufio.Reader
 
 	watcher watch.FileWatcher
 	changes *watch.FileChanges
@@ -97,6 +96,8 @@ var (
 	// DiscardingLogger can be used to disable logging output
 	DiscardingLogger = log.New(ioutil.Discard, "", 0)
 )
+
+var Offset atomic.Int64
 
 // TailFile begins tailing the file. Output stream is made available
 // via the `Tail.Lines` channel. To handle errors during tailing,
@@ -157,6 +158,9 @@ func (tail *Tail) Tell() (offset int64, err error) {
 	}
 
 	offset -= int64(tail.reader.Buffered())
+
+	Offset.Store(offset)
+
 	return
 }
 
@@ -277,7 +281,7 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second " +
 					"before resuming tailing")
-				tail.Lines <- &Line{msg, tail.lineNum, time.Now(), errors.New(msg)}
+				tail.Lines <- &Line{msg, time.Now(), errors.New(msg)}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -416,8 +420,7 @@ func (tail *Tail) sendLine(line string) bool {
 	}
 
 	for _, line := range lines {
-		tail.lineNum++
-		tail.Lines <- &Line{line, tail.lineNum, now, nil}
+		tail.Lines <- &Line{line, now, nil}
 	}
 
 	if tail.Config.RateLimiter != nil {
