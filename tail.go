@@ -1,6 +1,8 @@
 // Copyright (c) 2015 HPE Software Inc. All rights reserved.
 // Copyright (c) 2013 ActiveState Software Inc. All rights reserved.
 
+//这里有Offset 不准，不知道为什么，有空了再看吧。
+
 package tail
 
 import (
@@ -30,11 +32,15 @@ type Line struct {
 	Text string
 	Time time.Time
 	Err  error // Error from tail
+	//OffsetReaded int64 //readed bytes
+
+	ReadLines int64
+	Offset    int64
 }
 
 // NewLine returns a Line with present time.
 func NewLine(text string) *Line {
-	return &Line{text, time.Now(), nil}
+	return &Line{text, time.Now(), nil, 0, 0}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -99,6 +105,11 @@ var (
 
 var Offset atomic.Int64
 
+//var OffsetLast atomic.Int64
+
+// var OffsetReaded atomic.Int64
+var LineNum atomic.Int64
+
 // TailFile begins tailing the file. Output stream is made available
 // via the `Tail.Lines` channel. To handle errors during tailing,
 // invoke the `Wait` or `Err` method after finishing reading from the
@@ -147,6 +158,11 @@ func (tail *Tail) Tell() (offset int64, err error) {
 		return
 	}
 	offset, err = tail.file.Seek(0, os.SEEK_CUR)
+
+	//fmt.Println("Tell offset1", offset)
+
+	//Offset.Store(offset)
+
 	if err != nil {
 		return
 	}
@@ -159,6 +175,12 @@ func (tail *Tail) Tell() (offset int64, err error) {
 
 	offset -= int64(tail.reader.Buffered())
 
+	//这里的 offset 是准确的，是文件的指针，减去还在缓存中的数据，就是实际被读出来的
+
+	//fmt.Println("Tell   - buffered", tail.reader.Buffered())
+	//fmt.Println("Tell offset offset - buffered", offset)
+
+	//OffsetLast.Store(Offset.Load())
 	Offset.Store(offset)
 
 	return
@@ -216,6 +238,15 @@ func (tail *Tail) reopen() error {
 func (tail *Tail) readLine() (string, error) {
 	tail.lk.Lock()
 	line, err := tail.reader.ReadString('\n')
+
+	//fmt.Println("readLine", line)
+	//fmt.Println("len([]byte(line))   : ", len([]byte(line)))
+
+	//OffsetReaded.Add(int64(len([]byte(line))))
+	LineNum.Add(1)
+
+	//fmt.Println("LineNum", LineNum.Load())
+
 	tail.lk.Unlock()
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
@@ -264,6 +295,7 @@ func (tail *Tail) tailFileSync() {
 		// do not seek in named pipes
 		if !tail.Pipe {
 			// grab the position in case we need to back up in the event of a half-line
+			//fmt.Println("tail pipe")
 			offset, err = tail.Tell()
 			if err != nil {
 				tail.Kill(err)
@@ -281,7 +313,7 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second " +
 					"before resuming tailing")
-				tail.Lines <- &Line{msg, time.Now(), errors.New(msg)}
+				tail.Lines <- &Line{msg, time.Now(), errors.New(msg), LineNum.Load(), Offset.Load()}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -414,13 +446,16 @@ func (tail *Tail) sendLine(line string) bool {
 	now := time.Now()
 	lines := []string{line}
 
+	//fmt.Println("sendLine")
+
 	// Split longer lines
 	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
 		lines = util.PartitionString(line, tail.MaxLineSize)
 	}
 
 	for _, line := range lines {
-		tail.Lines <- &Line{line, now, nil}
+		//fmt.Println("for range lines")
+		tail.Lines <- &Line{line, now, nil, LineNum.Load(), Offset.Load()}
 	}
 
 	if tail.Config.RateLimiter != nil {

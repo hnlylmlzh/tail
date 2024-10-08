@@ -1,6 +1,7 @@
 
 add line
 
+在tell 那个地方，可以加上offset ，可以用了
 
 ---
 
